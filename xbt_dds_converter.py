@@ -258,6 +258,471 @@ class XBTDDSConverter:
         except Exception as e:
             return None, f"Error creating preview: {str(e)}"
 
+    def convert_batch(self, folder_path):
+        """Convert all XBT/DDS files in a folder with two-step process"""
+        try:
+            # Get converter's root directory (where the script is located)
+            converter_root = os.path.dirname(os.path.abspath(__file__))
+            
+            # Step 1: Find and analyze files
+            self.log_message("🔍 Step 1: Scanning for files...")
+            
+            # Determine which files to process
+            conversion_type = self.conversion_type.get()
+            
+            if conversion_type == "auto":
+                # Find both XBT and DDS files
+                extensions = ['.xbt', '.dds']
+            elif conversion_type == "xbt_to_dds":
+                extensions = ['.xbt']
+            else:  # dds_to_xbt
+                extensions = ['.dds']
+                
+            files = self.find_files_in_folder_with_progress(folder_path, extensions)
+            
+            if not files:
+                self.log_message(f"❌ No files found with extensions: {', '.join(extensions)}")
+                return False
+            
+            # Count files by type
+            xbt_files = [f for f in files if f.lower().endswith('.xbt')]
+            dds_files = [f for f in files if f.lower().endswith('.dds')]
+            
+            self.log_message(f"📊 Found {len(files)} total file(s):")
+            self.log_message(f"   📦 XBT files: {len(xbt_files)}")
+            self.log_message(f"   🖼️ DDS files: {len(dds_files)}")
+            
+            # Create working directories in converter's root
+            extract_dir = os.path.join(converter_root, "extracted_xbt_files")
+            convert_dir = os.path.join(converter_root, "converted_dds_files")
+            
+            # Step 2: Extract/Copy XBT files
+            if xbt_files:
+                self.log_message(f"\n🔍 Step 2: Extracting {len(xbt_files)} XBT files...")
+                
+                if not os.path.exists(extract_dir):
+                    os.makedirs(extract_dir)
+                    self.log_message(f"📁 Created extraction directory: {os.path.basename(extract_dir)}")
+                else:
+                    self.log_message(f"📁 Using existing extraction directory: {os.path.basename(extract_dir)}")
+                
+                # Show copy progress window
+                self.show_copy_progress_window(len(xbt_files))
+                
+                # Copy XBT files to extraction directory
+                for i, xbt_file in enumerate(xbt_files):
+                    try:
+                        filename = os.path.basename(xbt_file)
+                        dest_path = os.path.join(extract_dir, filename)
+                        
+                        # Update copy progress
+                        self.update_copy_progress(xbt_file, i, len(xbt_files))
+                        
+                        if not os.path.exists(dest_path) or self.overwrite_existing.get():
+                            shutil.copy2(xbt_file, dest_path)
+                            rel_path = os.path.relpath(xbt_file, folder_path)
+                            self.log_message(f"   📋 Copied: {rel_path}")
+                        else:
+                            self.log_message(f"   ⚠️ Skipped existing: {filename}")
+                            
+                    except Exception as e:
+                        self.log_message(f"   ❌ Error copying {os.path.basename(xbt_file)}: {str(e)}")
+                
+                # Final copy progress update
+                self.update_copy_progress("Copy Complete!", len(xbt_files), len(xbt_files))
+                self.root.after(300, self.close_copy_progress_window)
+            
+            # Step 3: Convert files
+            self.log_message(f"\n🔄 Step 3: Converting files...")
+            
+            if not os.path.exists(convert_dir):
+                os.makedirs(convert_dir)
+                self.log_message(f"📁 Created conversion directory: {os.path.basename(convert_dir)}")
+            else:
+                self.log_message(f"📁 Using existing conversion directory: {os.path.basename(convert_dir)}")
+            
+            # Prepare files for conversion
+            files_to_convert = []
+            
+            # Add extracted XBT files if we're doing XBT to DDS conversion
+            if conversion_type in ["auto", "xbt_to_dds"] and xbt_files:
+                extracted_xbt_files = [os.path.join(extract_dir, os.path.basename(f)) for f in xbt_files]
+                files_to_convert.extend(extracted_xbt_files)
+            
+            # Add DDS files if we're doing DDS to XBT conversion
+            if conversion_type in ["auto", "dds_to_xbt"] and dds_files:
+                files_to_convert.extend(dds_files)
+            
+            if not files_to_convert:
+                self.log_message("❌ No files to convert after extraction")
+                return False
+            
+            # Show convert progress window
+            self.show_convert_progress_window(len(files_to_convert))
+            
+            converted = 0
+            skipped = 0
+            errors = 0
+            
+            for i, input_path in enumerate(files_to_convert):
+                try:
+                    # Update convert progress
+                    self.update_convert_progress(input_path, i, len(files_to_convert))
+                    
+                    # Determine conversion for this file
+                    if conversion_type == "auto":
+                        file_type = self.detect_file_type(input_path)
+                        if file_type == 'xbt':
+                            current_conversion = "xbt_to_dds"
+                        elif file_type == 'dds':
+                            current_conversion = "dds_to_xbt"
+                        else:
+                            self.log_message(f"⚠️ Skipping unknown file type: {os.path.basename(input_path)}")
+                            skipped += 1
+                            continue
+                    else:
+                        current_conversion = conversion_type
+                        
+                    # Check conversion requirements
+                    can_convert, error_msg = self.check_conversion_requirements(input_path, current_conversion)
+                    if not can_convert:
+                        self.log_message(f"⚠️ Skipping {os.path.basename(input_path)}: {error_msg}")
+                        skipped += 1
+                        continue
+
+                    # Generate output path in the converted_dds_files directory
+                    input_filename = os.path.basename(input_path)
+                    base_name = os.path.splitext(input_filename)[0]
+                    
+                    if current_conversion == "xbt_to_dds":
+                        output_filename = base_name + ".dds"
+                        xml_filename = base_name + ".xml"  # XML file for header data
+                        output_path = os.path.join(convert_dir, output_filename)
+                        xml_output_path = os.path.join(convert_dir, xml_filename)
+                    else:
+                        output_filename = base_name + ".xbt"
+                        output_path = os.path.join(convert_dir, output_filename)
+                        
+                    # Check if output already exists
+                    if os.path.exists(output_path) and not self.overwrite_existing.get():
+                        self.log_message(f"⚠️ Skipping existing file: {output_filename}")
+                        skipped += 1
+                        continue
+                        
+                    self.log_message(f"🔄 Converting: {input_filename} → {output_filename}")
+                    
+                    # Perform conversion
+                    if current_conversion == "xbt_to_dds":
+                        success = self.xbt_to_dds_batch(input_path, output_path, xml_output_path)
+                    else:
+                        success = self.dds_to_xbt(input_path, output_path)
+                        
+                    if success:
+                        converted += 1
+                    else:
+                        errors += 1
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Error processing {os.path.basename(input_path)}: {str(e)}")
+                    errors += 1
+                    
+            # Final convert progress update
+            self.update_convert_progress("Conversion Complete!", len(files_to_convert), len(files_to_convert))
+            self.root.after(300, self.close_convert_progress_window)
+            
+            # Summary
+            self.log_message("="*60)
+            self.log_message(f"📊 Batch conversion summary:")
+            self.log_message(f"   Files found: {len(files)} ({len(xbt_files)} XBT, {len(dds_files)} DDS)")
+            self.log_message(f"   Files processed: {len(files_to_convert)}")
+            self.log_message(f"   ✅ Successfully converted: {converted}")
+            self.log_message(f"   ⚠️ Skipped: {skipped}")
+            self.log_message(f"   ❌ Errors: {errors}")
+            if xbt_files:
+                self.log_message(f"   📁 Extracted XBT files: {os.path.relpath(extract_dir, converter_root)}")
+            self.log_message(f"   📁 Converted files: {os.path.relpath(convert_dir, converter_root)}")
+            
+            return errors == 0
+            
+        except Exception as e:
+            self.log_message(f"❌ Batch conversion error: {str(e)}")
+            return False
+    
+    def xbt_to_dds_batch(self, input_path, output_path, xml_output_path):
+        """Convert XBT file to DDS for batch processing - modified to handle separate XML path"""
+        try:
+            with open(input_path, 'rb') as f:
+                data = f.read()
+                
+            header_size, dds_start, header_data = self.parse_xbt_header(data)
+            
+            # Save header to XML file in output directory
+            if not self.save_header_to_xml(header_data, xml_output_path):
+                raise ValueError("Failed to save header to XML")
+            
+            # Extract DDS data (everything after DDS signature)
+            dds_data = data[dds_start:]
+            
+            # Write DDS file to output directory
+            with open(output_path, 'wb') as f:
+                f.write(dds_data)
+                
+            self.log_message(f"✅ Successfully converted XBT to DDS")
+            self.log_message(f"📊 Removed {dds_start} bytes of XBT header")
+            self.log_message(f"📊 DDS file size: {len(dds_data)} bytes")
+            self.log_message(f"💾 Header saved as: {os.path.basename(xml_output_path)}")
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Error converting XBT to DDS: {str(e)}")
+            return False
+
+    def show_search_progress_window(self):
+        """Show a custom loading window for file searching"""
+        # Create the progress window
+        self.search_window = tk.Toplevel(self.root)
+        self.search_window.title("Scanning Files...")
+        self.search_window.geometry("600x250")
+        self.search_window.resizable(False, False)
+        self.search_window.configure(bg='#2c2c2c')
+        
+        # Center the window on the parent
+        self.search_window.transient(self.root)
+        self.search_window.grab_set()
+        
+        # Position relative to parent window
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 200
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 100
+        self.search_window.geometry(f"600x250+{x}+{y}")
+        
+        # Main frame
+        main_frame = tk.Frame(self.search_window, bg='#2c2c2c')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Title
+        title_label = tk.Label(main_frame, text="🔍 Scanning for Files...", 
+                            font=('Segoe UI', 16, 'bold'), fg='white', bg='#2c2c2c')
+        title_label.pack(pady=(0, 20))
+        
+        # Status label
+        self.search_status_label = tk.Label(main_frame, text="Initializing search...", 
+                                        font=('Segoe UI', 11), fg='#dddddd', bg='#2c2c2c')
+        self.search_status_label.pack(pady=(0, 10))
+        
+        # Progress bar frame
+        progress_frame = tk.Frame(main_frame, bg='#2c2c2c')
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Custom progress bar (since we don't know total files ahead of time)
+        self.search_progress_bar = ttk.Progressbar(progress_frame, mode='indeterminate', length=350)
+        self.search_progress_bar.pack()
+        self.search_progress_bar.start(10)
+        
+        # File count labels
+        self.search_xbt_count = tk.Label(main_frame, text="📦 XBT Files: 0", 
+                                        font=('Segoe UI', 10), fg='#66ff66', bg='#2c2c2c')
+        self.search_xbt_count.pack(anchor=tk.W, pady=1)
+        
+        self.search_dds_count = tk.Label(main_frame, text="🖼️ DDS Files: 0", 
+                                        font=('Segoe UI', 10), fg='#66aaff', bg='#2c2c2c')
+        self.search_dds_count.pack(anchor=tk.W, pady=1)
+        
+        self.search_total_count = tk.Label(main_frame, text="📋 Total Files: 0", 
+                                        font=('Segoe UI', 10, 'bold'), fg='#ffaa66', bg='#2c2c2c')
+        self.search_total_count.pack(anchor=tk.W, pady=1)
+        
+        # Force window to appear
+        self.search_window.update()
+
+    def update_search_progress(self, current_dir, xbt_count, dds_count, progress_percent=0):
+        """Update the search progress window"""
+        if hasattr(self, 'search_window') and self.search_window.winfo_exists():
+            # Update status with percentage
+            dir_name = os.path.basename(current_dir) if current_dir else "..."
+            self.search_status_label.config(text=f"Scanning: {dir_name} ({progress_percent}%)")
+            
+            # Update counts
+            self.search_xbt_count.config(text=f"📦 XBT Files: {xbt_count}")
+            self.search_dds_count.config(text=f"🖼️ DDS Files: {dds_count}")
+            self.search_total_count.config(text=f"📋 Total Files: {xbt_count + dds_count}")
+            
+            # Update window
+            self.search_window.update()
+
+    def close_search_progress_window(self):
+        """Close the search progress window"""
+        if hasattr(self, 'search_window') and self.search_window.winfo_exists():
+            self.search_progress_bar.stop()
+            self.search_window.grab_release()
+            self.search_window.destroy()
+
+    def show_copy_progress_window(self, total_files):
+        """Show a custom loading window for file copying"""
+        self.copy_window = tk.Toplevel(self.root)
+        self.copy_window.title("Copying Files...")
+        self.copy_window.geometry("400x200")
+        self.copy_window.resizable(False, False)
+        self.copy_window.configure(bg='#2c2c2c')
+        
+        self.copy_window.transient(self.root)
+        self.copy_window.grab_set()
+        
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 200
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 100
+        self.copy_window.geometry(f"400x200+{x}+{y}")
+        
+        main_frame = tk.Frame(self.copy_window, bg='#2c2c2c')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        title_label = tk.Label(main_frame, text="📋 Copying Files...", 
+                            font=('Segoe UI', 16, 'bold'), fg='white', bg='#2c2c2c')
+        title_label.pack(pady=(0, 20))
+        
+        self.copy_status_label = tk.Label(main_frame, text="Preparing to copy files...", 
+                                        font=('Segoe UI', 11), fg='#dddddd', bg='#2c2c2c')
+        self.copy_status_label.pack(pady=(0, 10))
+        
+        progress_frame = tk.Frame(main_frame, bg='#2c2c2c')
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.copy_progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=350, maximum=total_files, value=0)
+        self.copy_progress_bar.pack()
+        
+        self.copy_progress_label = tk.Label(main_frame, text="0%", 
+                                        font=('Segoe UI', 10, 'bold'), fg='#ffaa66', bg='#2c2c2c')
+        self.copy_progress_label.pack(pady=1)
+        
+        self.copy_window.update()
+
+    def update_copy_progress(self, current_file, completed, total):
+        """Update the copy progress window"""
+        if hasattr(self, 'copy_window') and self.copy_window.winfo_exists():
+            progress_percent = int((completed / total) * 100)
+            self.copy_progress_bar.config(value=completed)
+            self.copy_status_label.config(text=f"Copying: {os.path.basename(current_file)}")
+            self.copy_progress_label.config(text=f"{progress_percent}% ({completed}/{total})")
+            self.copy_window.update()
+
+    def close_copy_progress_window(self):
+        """Close the copy progress window"""
+        if hasattr(self, 'copy_window') and self.copy_window.winfo_exists():
+            self.copy_window.grab_release()
+            self.copy_window.destroy()
+
+    def show_convert_progress_window(self, total_files):
+        """Show a custom loading window for file conversion"""
+        self.convert_window = tk.Toplevel(self.root)
+        self.convert_window.title("Converting Files...")
+        self.convert_window.geometry("400x200")
+        self.convert_window.resizable(False, False)
+        self.convert_window.configure(bg='#2c2c2c')
+        
+        self.convert_window.transient(self.root)
+        self.convert_window.grab_set()
+        
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 200
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 100
+        self.convert_window.geometry(f"400x200+{x}+{y}")
+        
+        main_frame = tk.Frame(self.convert_window, bg='#2c2c2c')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        title_label = tk.Label(main_frame, text="🔄 Converting Files...", 
+                            font=('Segoe UI', 16, 'bold'), fg='white', bg='#2c2c2c')
+        title_label.pack(pady=(0, 20))
+        
+        self.convert_status_label = tk.Label(main_frame, text="Preparing conversion...", 
+                                            font=('Segoe UI', 11), fg='#dddddd', bg='#2c2c2c')
+        self.convert_status_label.pack(pady=(0, 10))
+        
+        progress_frame = tk.Frame(main_frame, bg='#2c2c2c')
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.convert_progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=350, maximum=total_files, value=0)
+        self.convert_progress_bar.pack()
+        
+        self.convert_progress_label = tk.Label(main_frame, text="0%", 
+                                            font=('Segoe UI', 10, 'bold'), fg='#ffaa66', bg='#2c2c2c')
+        self.convert_progress_label.pack(pady=1)
+        
+        self.convert_window.update()
+
+    def update_convert_progress(self, current_file, completed, total):
+        """Update the convert progress window"""
+        if hasattr(self, 'convert_window') and self.convert_window.winfo_exists():
+            progress_percent = int((completed / total) * 100)
+            self.convert_progress_bar.config(value=completed)
+            self.convert_status_label.config(text=f"Converting: {os.path.basename(current_file)}")
+            self.convert_progress_label.config(text=f"{progress_percent}% ({completed}/{total})")
+            self.convert_window.update()
+
+    def close_convert_progress_window(self):
+        """Close the convert progress window"""
+        if hasattr(self, 'convert_window') and self.convert_window.winfo_exists():
+            self.convert_window.grab_release()
+            self.convert_window.destroy()
+
+    def find_files_in_folder_with_progress(self, folder_path, extensions):
+        """Find all files with given extensions in folder with progress display"""
+        files = []
+        xbt_count = 0
+        dds_count = 0
+        
+        # First pass: count total directories to scan
+        total_dirs = sum(1 for root, dirs, files in os.walk(folder_path))
+        
+        # Show progress window
+        self.show_search_progress_window()
+        
+        # Configure progress bar for determinate mode
+        self.search_progress_bar.config(mode='determinate', maximum=total_dirs, value=0)
+        
+        try:
+            # Walk through directories with progress tracking
+            for dir_index, (root, dirs, filenames) in enumerate(os.walk(folder_path)):
+                # Update progress with current directory and percentage
+                progress_percent = int((dir_index / total_dirs) * 100)
+                self.search_progress_bar.config(value=dir_index)
+                self.update_search_progress(root, xbt_count, dds_count, progress_percent)
+                
+                # Process files in current directory
+                for filename in filenames:
+                    if any(filename.lower().endswith(ext.lower()) for ext in extensions):
+                        filepath = os.path.join(root, filename)
+                        files.append(filepath)
+                        
+                        # Update counts
+                        if filename.lower().endswith('.xbt'):
+                            xbt_count += 1
+                        elif filename.lower().endswith('.dds'):
+                            dds_count += 1
+            
+            # Final update at 100%
+            self.search_progress_bar.config(value=total_dirs)
+            self.update_search_progress("Search Complete!", xbt_count, dds_count, 100)
+            
+            # Brief pause to show final counts
+            self.root.after(100, self.close_search_progress_window)
+            
+        except Exception as e:
+            self.close_search_progress_window()
+            raise e
+        
+        return sorted(files)
+
+    def find_files_in_folder(self, folder_path, extensions):
+        """Find all files with given extensions in folder - always search recursively for batch mode"""
+        files = []
+        
+        # Always search recursively for batch mode to find all XBT files in subdirectories
+        for root, dirs, filenames in os.walk(folder_path):
+            for filename in filenames:
+                if any(filename.lower().endswith(ext.lower()) for ext in extensions):
+                    files.append(os.path.join(root, filename))
+                    
+        return sorted(files)
+
     def update_preview(self, *args):
         """Update the preview window when a file is selected"""
         filepath = self.file_path.get()
@@ -267,7 +732,6 @@ class XBTDDSConverter:
 
         # Clear the conversion log when loading a new file
         self.log_text.delete(1.0, tk.END)
-
 
         self.fix_dds_format = tk.BooleanVar(value=False)
         
@@ -293,6 +757,91 @@ class XBTDDSConverter:
             self.preview_info['header_size'].config(text="Header Size: -")
             return
         
+        # Check if we're in batch mode - if so, show file count instead of preview
+        if self.conversion_mode.get() == "batch" and os.path.isdir(filepath):
+            try:
+                # Count files by type for batch mode with progress window
+                conversion_type = self.conversion_type.get()
+                
+                if conversion_type == "auto":
+                    extensions = ['.xbt', '.dds']
+                elif conversion_type == "xbt_to_dds":
+                    extensions = ['.xbt']
+                else:  # dds_to_xbt
+                    extensions = ['.dds']
+                
+                # Use the progress version for batch mode
+                files = self.find_files_in_folder_with_progress(filepath, extensions)
+                xbt_files = [f for f in files if f.lower().endswith('.xbt')]
+                dds_files = [f for f in files if f.lower().endswith('.dds')]
+                
+                # Show file count in preview area
+                self.preview_canvas.create_text(
+                    225, 150,
+                    text="📁 Batch Mode Selected",
+                    font=('Segoe UI', 14, 'bold'),
+                    fill='#2a7fff',
+                    justify=tk.CENTER
+                )
+                
+                self.preview_canvas.create_text(
+                    225, 200,
+                    text=f"📊 Files Found:\n📦 XBT Files: {len(xbt_files)}\n🖼️ DDS Files: {len(dds_files)}\n📋 Total: {len(files)}",
+                    font=('Segoe UI', 12),
+                    fill='#cccccc',
+                    justify=tk.CENTER
+                )
+                
+                if len(files) > 0:
+                    self.preview_canvas.create_text(
+                        225, 280,
+                        text="✅ Ready to convert!\nClick 'Convert Folder' to begin.",
+                        font=('Segoe UI', 10),
+                        fill='#66ff66',
+                        justify=tk.CENTER
+                    )
+                else:
+                    self.preview_canvas.create_text(
+                        225, 280,
+                        text="⚠️ No compatible files found\nin selected folder or subfolders.",
+                        font=('Segoe UI', 10),
+                        fill='#ffaa66',
+                        justify=tk.CENTER
+                    )
+                
+                # Update info labels for batch mode
+                folder_name = os.path.basename(filepath)
+                self.preview_info['filename'].config(text=f"Folder: {folder_name}")
+                self.preview_info['format'].config(text=f"Files: {len(xbt_files)} XBT, {len(dds_files)} DDS")
+                self.preview_info['dimensions'].config(text="Mode: Batch Processing")
+                self.preview_info['size'].config(text=f"Total Files: {len(files)}")
+                self.preview_info['compression'].config(text="Conversion: Multiple Files")
+                self.preview_info['header_size'].config(text="Status: Ready")
+                
+                # Log the file count information
+                self.log_message(f"📁 Batch folder selected: {folder_name}")
+                self.log_message(f"📊 Found {len(files)} total files:")
+                self.log_message(f"   📦 XBT files: {len(xbt_files)}")
+                self.log_message(f"   🖼️ DDS files: {len(dds_files)}")
+                if len(files) > 0:
+                    self.log_message(f"✅ Ready for batch conversion!")
+                else:
+                    self.log_message(f"⚠️ No compatible files found for conversion")
+                
+                return
+                
+            except Exception as e:
+                self.close_search_progress_window()  # Make sure to close progress window on error
+                self.preview_canvas.create_text(
+                    225, 225,
+                    text=f"❌ Error scanning folder:\n{str(e)}",
+                    font=('Segoe UI', 10),
+                    fill='#ff6666',
+                    justify=tk.CENTER
+                )
+                return
+        
+        # Single file mode - continue with normal preview (only for single files)
         try:
             # Extract DDS data and create temp file
             temp_dds_path = self.create_temp_dds(filepath)
@@ -1410,26 +1959,7 @@ class XBTDDSConverter:
         except Exception as e:
             self.log_message(f"❌ Error converting DDS to XBT: {str(e)}")
             return False
-    
-    def find_files_in_folder(self, folder_path, extensions):
-        """Find all files with given extensions in folder"""
-        files = []
-        
-        if self.include_subdirs.get():
-            # Search recursively
-            for root, dirs, filenames in os.walk(folder_path):
-                for filename in filenames:
-                    if any(filename.lower().endswith(ext.lower()) for ext in extensions):
-                        files.append(os.path.join(root, filename))
-        else:
-            # Search only in root folder
-            for filename in os.listdir(folder_path):
-                filepath = os.path.join(folder_path, filename)
-                if os.path.isfile(filepath) and any(filename.lower().endswith(ext.lower()) for ext in extensions):
-                    files.append(filepath)
-                    
-        return sorted(files)
-        
+            
     def check_conversion_requirements(self, input_path, conversion_type):
         """Check if all required files exist for conversion"""
         if conversion_type == "dds_to_xbt":
@@ -1439,111 +1969,6 @@ class XBTDDSConverter:
             if not os.path.exists(xml_path):
                 return False, f"Required XML header file not found: {os.path.basename(xml_path)}"
         return True, ""
-
-    def convert_batch(self, folder_path):
-        """Convert all XBT/DDS files in a folder"""
-        try:
-            # Determine which files to process
-            conversion_type = self.conversion_type.get()
-            
-            if conversion_type == "auto":
-                # Find both XBT and DDS files
-                extensions = ['.xbt', '.dds']
-            elif conversion_type == "xbt_to_dds":
-                extensions = ['.xbt']
-            else:  # dds_to_xbt
-                extensions = ['.dds']
-                
-            files = self.find_files_in_folder(folder_path, extensions)
-            
-            if not files:
-                self.log_message(f"❌ No files found with extensions: {', '.join(extensions)}")
-                return False
-                
-            self.log_message(f"📊 Found {len(files)} file(s) to convert")
-            
-            # Switch to determinate progress bar
-            self.progress.config(mode='determinate', maximum=len(files), value=0)
-            
-            converted = 0
-            skipped = 0
-            errors = 0
-            
-            for i, input_path in enumerate(files):
-                try:
-                    # Update progress
-                    self.progress_label.config(text=f"Processing {i+1}/{len(files)}: {os.path.basename(input_path)}")
-                    self.progress.config(value=i)
-                    self.root.update_idletasks()
-                    
-                    # Determine conversion for this file
-                    if conversion_type == "auto":
-                        file_type = self.detect_file_type(input_path)
-                        if file_type == 'xbt':
-                            current_conversion = "xbt_to_dds"
-                        elif file_type == 'dds':
-                            current_conversion = "dds_to_xbt"
-                        else:
-                            self.log_message(f"⚠️ Skipping unknown file type: {os.path.basename(input_path)}")
-                            skipped += 1
-                            continue
-                    else:
-                        current_conversion = conversion_type
-                        
-                    # Check conversion requirements
-                    can_convert, error_msg = self.check_conversion_requirements(input_path, current_conversion)
-                    if not can_convert:
-                        self.log_message(f"⚠️ Skipping {os.path.basename(input_path)}: {error_msg}")
-                        skipped += 1
-                        continue
-
-                    # Generate output path
-                    base_name = os.path.splitext(input_path)[0]
-                    if current_conversion == "xbt_to_dds":
-                        output_path = base_name + ".dds"
-                    else:
-                        output_path = base_name + ".xbt"
-                        
-                    # Check if output already exists
-                    if os.path.exists(output_path) and not self.overwrite_existing.get():
-                        self.log_message(f"⚠️ Skipping existing file: {os.path.basename(output_path)}")
-                        skipped += 1
-                        continue
-                        
-                    # Perform conversion
-                    self.log_message(f"🔄 Converting: {os.path.basename(input_path)} → {os.path.basename(output_path)}")
-                    
-                    if current_conversion == "xbt_to_dds":
-                        success = self.xbt_to_dds(input_path, output_path)
-                    else:
-                        success = self.dds_to_xbt(input_path, output_path)
-                        
-                    if success:
-                        converted += 1
-                    else:
-                        errors += 1
-                        
-                except Exception as e:
-                    self.log_message(f"❌ Error processing {os.path.basename(input_path)}: {str(e)}")
-                    errors += 1
-                    
-            # Final progress update
-            self.progress.config(value=len(files))
-            self.progress_label.config(text=f"Batch conversion complete: {converted} converted, {skipped} skipped, {errors} errors")
-            
-            # Summary
-            self.log_message("="*60)
-            self.log_message(f"📊 Batch conversion summary:")
-            self.log_message(f"   Files processed: {len(files)}")
-            self.log_message(f"   ✅ Successfully converted: {converted}")
-            self.log_message(f"   ⚠️ Skipped: {skipped}")
-            self.log_message(f"   ❌ Errors: {errors}")
-            
-            return errors == 0
-            
-        except Exception as e:
-            self.log_message(f"❌ Batch conversion error: {str(e)}")
-            return False
 
     def convert_file(self):
         """Main conversion function - handles both single file and batch conversion"""
