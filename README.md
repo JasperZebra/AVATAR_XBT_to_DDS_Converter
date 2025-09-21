@@ -1,4 +1,4 @@
 # AVATAR_XBT_to_DDS_Converter
 XBT &lt;-> DDS Converter made for AVATAR: The Game
 
-![converter_icon](https://github.com/user-attachments/assets/fe91e977-1a57-4abc-bed2-dca2a875af9a)
+<img width="1024" height="1024" alt="converter_icon" src="https://github.com/user-attachments/assets/c5b85da3-29c9-4765-b12d-9679d8d78fe2" />
